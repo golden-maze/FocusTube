@@ -240,26 +240,48 @@ function openPlayer(d) {
   }
 }
 
-async function startInvidious() {
-  $("plVideo").innerHTML = `<div class="plmsg"><div class="spinner" style="margin:0 auto"></div></div>`;
-  try {
-    const url = `${state.instance}/api/v1/videos/${current.id}${state.proxy ? "?local=true" : ""}`;
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 12000);
-    const res = await fetch(url, { signal: ctrl.signal });
-    clearTimeout(t);
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    streams = (data.formatStreams || []).filter(f => f.url)
-      .sort((a, b) => (parseInt(b.resolution) || 0) - (parseInt(a.resolution) || 0));
-    if (!streams.length) throw new Error("No playable streams");
-    renderQualityChips();
-    const pick = streams.find(s => (s.qualityLabel || s.resolution) === state.quality) || streams[0];
-    mountVideo(pick, 0);
-  } catch (e) {
-    playerError();
+async function fetchStreams(instance, id) {
+  const url = `${instance}/api/v1/videos/${id}${state.proxy ? "?local=true" : ""}`;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 10000);
+  const res = await fetch(url, { signal: ctrl.signal });
+  clearTimeout(t);
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  const fs = (data.formatStreams || []).filter(f => f.url)
+    .sort((a, b) => (parseInt(b.resolution) || 0) - (parseInt(a.resolution) || 0));
+  if (!fs.length) throw new Error("No playable streams");
+  return fs;
+}
+
+let sourceQueue = [];
+function startInvidious() {
+  sourceQueue = [state.instance, ...allInstances().filter(i => i !== state.instance)];
+  tryNextSource();
+}
+async function tryNextSource() {
+  const id = current && current.id;
+  while (current && current.id === id && sourceQueue.length) {
+    const inst = sourceQueue.shift();
+    $("plVideo").innerHTML = `<div class="plmsg"><div class="spinner" style="margin:0 auto"></div>
+      <p style="color:var(--fg2);font-size:13px">Trying ${esc(inst.replace(/^https:\/\//, ""))}…</p></div>`;
+    try {
+      const fs = await fetchStreams(inst, id);
+      if (!current || current.id !== id) return; // player closed / changed meanwhile
+      if (inst !== state.instance) {
+        state.instance = inst; store.set("instance", inst);
+        renderInstanceSelect();
+        toast("Switched source to " + inst.replace(/^https:\/\//, ""));
+      }
+      streams = fs;
+      renderQualityChips();
+      const pick = streams.find(s => (s.qualityLabel || s.resolution) === state.quality) || streams[0];
+      mountVideo(pick, 0);
+      return;
+    } catch (e) { /* try next source */ }
   }
+  if (current && current.id === id) playerError();
 }
 
 function mountVideo(streamObj, startAt) {
@@ -271,7 +293,7 @@ function mountVideo(streamObj, startAt) {
     if (startAt) v.currentTime = startAt;
     v.playbackRate = state.speed;
   });
-  v.addEventListener("error", () => playerError(), { once: true });
+  v.addEventListener("error", () => tryNextSource(), { once: true });
   v.play().catch(() => {});
 }
 
@@ -428,9 +450,14 @@ async function testInstance() {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 8000);
-    const res = await fetch(state.instance + "/api/v1/videos/jNQXAC9IVRw?fields=videoId", { signal: ctrl.signal });
+    const res = await fetch(state.instance + "/api/v1/videos/jNQXAC9IVRw?fields=videoId,formatStreams", { signal: ctrl.signal });
     clearTimeout(t);
-    if (res.ok) { const j = await res.json(); s.textContent = j.videoId ? "✅ working" : "⚠️ odd response"; }
+    if (res.ok) {
+      const j = await res.json();
+      const n = (j.formatStreams || []).filter(f => f.url).length;
+      s.textContent = n ? "✅ working (video streams available)"
+        : "⚠️ reachable, but no video streams — try another";
+    }
     else s.textContent = `⚠️ HTTP ${res.status} — try another source`;
   } catch (e) {
     s.textContent = "❌ unreachable — pick another source";
