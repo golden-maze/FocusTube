@@ -28,7 +28,7 @@ let state = {
   proxy: store.get("proxy", true),
   hideShorts: store.get("hideShorts", true),
   perChannel: store.get("perChannel", 8),
-  speed: store.get("speed", 1),
+  speed: store.get("speed", 2),
   quality: store.get("quality", "720p"),
   feedCache: store.get("feedCache", null)          // {ts, videos}
 };
@@ -229,15 +229,32 @@ function openPlayer(d) {
   $("plTitle").textContent = d.title;
   $("plSub").textContent = `${d.channel} · ${timeAgo(d.published)}`;
   streams = [];
+  setDescription("");
   renderSpeedChips();
   renderQualityChips();
   $("player").classList.add("open");
   document.body.style.overflow = "hidden";
   if (state.instance === YT_OFFICIAL) {
     $("plVideo").innerHTML = officialIframe(d.id);
+    loadDescriptionFromYT(d.id);
   } else {
     startInvidious();
   }
+}
+
+/* description: collapsed by default, toggle to expand */
+function setDescription(text) {
+  const btn = $("descToggle"), box = $("plDesc");
+  box.style.display = "none";
+  box.textContent = text || "";
+  btn.textContent = "Description ▾";
+  btn.style.display = text ? "block" : "none";
+}
+async function loadDescriptionFromYT(id) {
+  try {
+    const d = await yt("videos", { part: "snippet", id });
+    if (current && current.id === id) setDescription(d.items?.[0]?.snippet?.description || "");
+  } catch (e) { /* no description available */ }
 }
 
 async function fetchStreams(instance, id) {
@@ -252,7 +269,7 @@ async function fetchStreams(instance, id) {
   const fs = (data.formatStreams || []).filter(f => f.url)
     .sort((a, b) => (parseInt(b.resolution) || 0) - (parseInt(a.resolution) || 0));
   if (!fs.length) throw new Error("No playable streams");
-  return fs;
+  return { fs, description: data.description || "" };
 }
 
 let sourceQueue = [];
@@ -267,14 +284,15 @@ async function tryNextSource() {
     $("plVideo").innerHTML = `<div class="plmsg"><div class="spinner" style="margin:0 auto"></div>
       <p style="color:var(--fg2);font-size:13px">Trying ${esc(inst.replace(/^https:\/\//, ""))}…</p></div>`;
     try {
-      const fs = await fetchStreams(inst, id);
+      const r = await fetchStreams(inst, id);
       if (!current || current.id !== id) return; // player closed / changed meanwhile
       if (inst !== state.instance) {
         state.instance = inst; store.set("instance", inst);
         renderInstanceSelect();
         toast("Switched source to " + inst.replace(/^https:\/\//, ""));
       }
-      streams = fs;
+      setDescription(r.description);
+      streams = r.fs;
       renderQualityChips();
       const pick = streams.find(s => (s.qualityLabel || s.resolution) === state.quality) || streams[0];
       mountVideo(pick, 0);
@@ -306,6 +324,7 @@ function playerError() {
     </div>`;
   $("ytFallback").addEventListener("click", () => {
     $("plVideo").innerHTML = officialIframe(current.id);
+    loadDescriptionFromYT(current.id);
   });
 }
 
@@ -505,7 +524,11 @@ function bindSettings() {
 
   $("perChannel").value = String(state.perChannel);
   $("perChannel").addEventListener("change", e => {
-    state.perChannel = +e.target.value; store.set("perChannel", state.perChannel);
+    let v = parseInt(e.target.value, 10);
+    if (!Number.isFinite(v)) v = 8;
+    v = Math.min(50, Math.max(1, v));
+    e.target.value = String(v);
+    state.perChannel = v; store.set("perChannel", state.perChannel);
     state.feedCache = null; store.set("feedCache", null);
     renderChannels();
   });
@@ -564,6 +587,13 @@ function init() {
   TABS.forEach(t => $("tab-" + t).addEventListener("click", () => switchTab(t)));
   $("refreshBtn").addEventListener("click", () => loadFeed(true));
   $("playerClose").addEventListener("click", closePlayer);
+  $("backBtn").addEventListener("click", closePlayer);
+  $("descToggle").addEventListener("click", () => {
+    const box = $("plDesc");
+    const open = box.style.display !== "none";
+    box.style.display = open ? "none" : "block";
+    $("descToggle").textContent = open ? "Description ▾" : "Description ▴";
+  });
   $("searchForm").addEventListener("submit", e => {
     e.preventDefault();
     const q = $("searchInput").value.trim();
