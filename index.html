@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>FocusTube</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="FocusTube">
+<meta name="theme-color" content="#0f0f0f">
+<link rel="apple-touch-icon" href="icon-180.png">
+<style>
+:root{
+  --bg:#0f0f0f; --bg2:#1a1a1a; --bg3:#272727; --fg:#f1f1f1; --fg2:#aaaaaa;
+  --accent:#ff4d4d; --border:#303030; --safe-top:env(safe-area-inset-top,0px);
+  --safe-bottom:env(safe-area-inset-bottom,0px);
+}
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  overscroll-behavior-y:contain;}
+button{font-family:inherit;}
+h1{font-size:20px;margin:0;}
+a{color:var(--accent);text-decoration:none;}
+
+/* ---------- layout ---------- */
+header{position:fixed;top:0;left:0;right:0;z-index:20;background:rgba(15,15,15,.92);
+  -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
+  padding:calc(var(--safe-top) + 10px) 16px 10px;display:flex;align-items:center;gap:10px;
+  border-bottom:1px solid var(--border);}
+header .spacer{flex:1;}
+main{padding:calc(var(--safe-top) + 58px) 0 calc(var(--safe-bottom) + 74px);}
+nav{position:fixed;bottom:0;left:0;right:0;z-index:20;display:flex;
+  background:rgba(15,15,15,.92);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
+  border-top:1px solid var(--border);padding-bottom:var(--safe-bottom);}
+nav button{flex:1;background:none;border:none;color:var(--fg2);padding:10px 0 8px;
+  font-size:11px;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;}
+nav button.active{color:var(--fg);}
+nav button svg{width:24px;height:24px;fill:currentColor;}
+.screen{display:none;}
+.screen.active{display:block;}
+
+/* ---------- buttons & inputs ---------- */
+.btn{background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:20px;
+  padding:8px 16px;font-size:14px;cursor:pointer;}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;}
+.btn.small{padding:5px 12px;font-size:13px;}
+.btn:active{opacity:.7;}
+.iconbtn{background:none;border:none;color:var(--fg);padding:6px;cursor:pointer;}
+.iconbtn svg{width:22px;height:22px;fill:currentColor;}
+input[type=text],input[type=search],input[type=password],select{
+  width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:10px;
+  color:var(--fg);padding:11px 12px;font-size:15px;outline:none;-webkit-appearance:none;appearance:none;}
+input:focus{border-color:#555;}
+.row{display:flex;gap:8px;align-items:center;}
+
+/* ---------- video list ---------- */
+.vlist{display:flex;flex-direction:column;}
+.vcard{display:block;border:none;background:none;color:inherit;text-align:left;width:100%;
+  padding:0 0 18px;cursor:pointer;}
+.thumbwrap{position:relative;width:100%;aspect-ratio:16/9;background:var(--bg2);overflow:hidden;}
+.thumbwrap img{width:100%;height:100%;object-fit:cover;display:block;}
+.dur{position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.8);color:#fff;
+  font-size:12px;padding:1px 5px;border-radius:4px;font-weight:500;}
+.vmeta{padding:10px 14px 0;}
+.vtitle{font-size:15px;font-weight:500;line-height:1.35;margin:0 0 4px;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.vsub{font-size:13px;color:var(--fg2);}
+.empty{padding:60px 24px;text-align:center;color:var(--fg2);font-size:15px;line-height:1.5;}
+.spinner{margin:50px auto;width:28px;height:28px;border:3px solid var(--bg3);
+  border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ---------- search ---------- */
+.searchbar{padding:4px 14px 12px;}
+
+/* ---------- settings ---------- */
+.section{padding:18px 16px 6px;}
+.section h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--fg2);
+  margin:0 0 10px;}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:14px;
+  margin-bottom:14px;}
+.card label{font-size:13px;color:var(--fg2);display:block;margin:10px 0 6px;}
+.card label:first-child{margin-top:0;}
+.hint{font-size:12px;color:var(--fg2);line-height:1.45;margin-top:8px;}
+.chanrow{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);}
+.chanrow:last-child{border-bottom:none;}
+.chanrow img{width:36px;height:36px;border-radius:50%;background:var(--bg3);}
+.chanrow .name{flex:1;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.switchrow{display:flex;align-items:center;justify-content:space-between;padding:10px 0;}
+.switchrow span{font-size:14px;}
+.switch{position:relative;width:46px;height:28px;flex:none;}
+.switch input{opacity:0;width:0;height:0;}
+.slider{position:absolute;inset:0;background:var(--bg3);border-radius:14px;transition:.2s;}
+.slider:before{content:"";position:absolute;width:22px;height:22px;left:3px;top:3px;
+  background:#fff;border-radius:50%;transition:.2s;}
+.switch input:checked + .slider{background:var(--accent);}
+.switch input:checked + .slider:before{transform:translateX(18px);}
+.statusdot{font-size:12px;}
+
+/* ---------- player ---------- */
+#player{position:fixed;inset:0;z-index:50;background:#000;display:none;flex-direction:column;}
+#player.open{display:flex;}
+.pl-top{padding:calc(var(--safe-top) + 6px) 8px 6px;display:flex;align-items:center;}
+.pl-video{width:100%;aspect-ratio:16/9;background:#000;flex:none;}
+.pl-video iframe{width:100%;height:100%;border:none;display:block;}
+.pl-body{flex:1;overflow-y:auto;padding:14px 16px calc(var(--safe-bottom) + 20px);
+  background:var(--bg);}
+.pl-title{font-size:16px;font-weight:600;line-height:1.35;margin:0 0 6px;}
+.pl-sub{font-size:13px;color:var(--fg2);margin-bottom:18px;}
+.pl-label{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--fg2);
+  margin:0 0 8px;}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px;}
+.chip{background:var(--bg3);border:1px solid var(--border);color:var(--fg);border-radius:18px;
+  padding:7px 15px;font-size:14px;cursor:pointer;}
+.chip.active{background:var(--fg);color:#000;border-color:var(--fg);font-weight:600;}
+
+/* ---------- toast ---------- */
+#toast{position:fixed;left:50%;bottom:calc(var(--safe-bottom) + 84px);transform:translateX(-50%);
+  background:#333;color:#fff;padding:10px 18px;border-radius:22px;font-size:14px;z-index:99;
+  opacity:0;transition:opacity .25s;pointer-events:none;max-width:86vw;text-align:center;}
+#toast.show{opacity:1;}
+
+/* ---------- modal ---------- */
+#modal{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.6);display:none;
+  align-items:flex-end;}
+#modal.open{display:flex;}
+.sheet{background:var(--bg2);width:100%;border-radius:16px 16px 0 0;max-height:80vh;
+  overflow-y:auto;padding:18px 16px calc(var(--safe-bottom) + 24px);}
+.sheet h3{margin:0 0 12px;font-size:16px;}
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="headerTitle">Subscriptions</h1>
+  <div class="spacer"></div>
+  <button class="iconbtn" id="refreshBtn" title="Refresh" aria-label="Refresh">
+    <svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+  </button>
+</header>
+
+<main>
+  <!-- FEED -->
+  <div class="screen active" id="screen-feed">
+    <div id="feedContent"><div class="empty">Add your API key and channels in Settings to build your feed.</div></div>
+  </div>
+
+  <!-- SEARCH -->
+  <div class="screen" id="screen-search">
+    <div class="searchbar">
+      <form id="searchForm" class="row">
+        <input type="search" id="searchInput" placeholder="Search videos" autocomplete="off">
+        <button class="btn primary" type="submit">Go</button>
+      </form>
+    </div>
+    <div id="searchContent"><div class="empty">Search for videos. Shorts are filtered out.</div></div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div class="screen" id="screen-settings">
+    <div class="section">
+      <h2>YouTube Data API</h2>
+      <div class="card">
+        <label for="apiKeyInput">API key</label>
+        <div class="row">
+          <input type="password" id="apiKeyInput" placeholder="AIza...">
+          <button class="btn small" id="saveKeyBtn">Save</button>
+        </div>
+        <div class="hint">Used for the feed and search only. Stored on this device. See the setup guide for how to create one (free).</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Channels</h2>
+      <div class="card">
+        <div class="row">
+          <input type="text" id="chanInput" placeholder="Channel name, @handle or URL">
+          <button class="btn small primary" id="chanAddBtn">Add</button>
+        </div>
+        <div id="chanResults"></div>
+        <div id="chanList"></div>
+        <div class="hint" id="chanCount"></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Player</h2>
+      <div class="card">
+        <label for="instanceSelect">Playback source</label>
+        <select id="instanceSelect"></select>
+        <div class="row" style="margin-top:8px;">
+          <input type="text" id="customInstance" placeholder="https://your-instance.example">
+          <button class="btn small" id="addInstanceBtn">Add</button>
+        </div>
+        <div class="row" style="margin-top:10px;">
+          <button class="btn small" id="testInstanceBtn">Test source</button>
+          <span class="statusdot" id="instanceStatus"></span>
+        </div>
+        <div class="switchrow">
+          <span>Proxy video through instance<br><small style="color:var(--fg2)">More reliable playback, slower</small></span>
+          <label class="switch"><input type="checkbox" id="proxyToggle"><span class="slider"></span></label>
+        </div>
+        <div class="hint">Invidious sources play without ads. Public instances come and go — if playback fails, test another source or add your own. The official YouTube source always works but may show ads.</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Feed</h2>
+      <div class="card">
+        <div class="switchrow">
+          <span>Hide Shorts</span>
+          <label class="switch"><input type="checkbox" id="shortsToggle" checked><span class="slider"></span></label>
+        </div>
+        <label for="perChannel">Videos per channel</label>
+        <select id="perChannel">
+          <option value="5">5</option><option value="8" selected>8</option>
+          <option value="12">12</option><option value="15">15</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Backup</h2>
+      <div class="card">
+        <div class="row">
+          <button class="btn small" id="exportBtn">Export settings</button>
+          <button class="btn small" id="importBtn">Import</button>
+          <input type="file" id="importFile" accept=".json" style="display:none">
+        </div>
+        <div class="hint">Exports channels and preferences (not your API key) as a JSON file.</div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<nav>
+  <button id="tab-feed" class="active">
+    <svg viewBox="0 0 24 24"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h10v2H4z"/></svg>Feed
+  </button>
+  <button id="tab-search">
+    <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"/></svg>Search
+  </button>
+  <button id="tab-settings">
+    <svg viewBox="0 0 24 24"><path d="M19.14 12.94a7.07 7.07 0 0 0 .06-.94 7.07 7.07 0 0 0-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.61-.22l-2.39.96a7.05 7.05 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.5.5 0 0 0-.61.22L2.65 8.84a.5.5 0 0 0 .12.64l2.03 1.58a7.07 7.07 0 0 0 0 1.88l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.23.4.32.61.22l2.39-.96c.49.38 1.03.7 1.62.94l.36 2.54a.5.5 0 0 0 .5.42h3.84a.5.5 0 0 0 .5-.42l.36-2.54a7.05 7.05 0 0 0 1.62-.94l2.39.96c.22.09.48 0 .61-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5z"/></svg>Settings
+  </button>
+</nav>
+
+<!-- PLAYER -->
+<div id="player">
+  <div class="pl-top">
+    <button class="iconbtn" id="playerClose" aria-label="Close">
+      <svg viewBox="0 0 24 24"><path d="M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z"/></svg>
+    </button>
+  </div>
+  <div class="pl-video" id="plVideo"></div>
+  <div class="pl-body">
+    <p class="pl-title" id="plTitle"></p>
+    <p class="pl-sub" id="plSub"></p>
+    <p class="pl-label">Speed</p>
+    <div class="chips" id="speedChips"></div>
+    <p class="pl-label">Quality</p>
+    <div class="chips" id="qualityChips"></div>
+    <div class="hint">Changing speed or quality reloads the video from the start. For live changes mid-video, use the ⚙️ menu inside the player. Fullscreen: use the player's fullscreen button.</div>
+  </div>
+</div>
+
+<div id="modal"><div class="sheet" id="sheetContent"></div></div>
+<div id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
