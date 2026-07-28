@@ -29,7 +29,7 @@ let state = {
   hideShorts: store.get("hideShorts", true),
   perChannel: store.get("perChannel", 8),
   speed: store.get("speed", 1),
-  quality: store.get("quality", "hd720"),
+  quality: store.get("quality", "720p"),
   feedCache: store.get("feedCache", null)          // {ts, videos}
 };
 
@@ -209,66 +209,125 @@ async function runSearch(q) {
   }
 }
 
-/* ---------------- player ---------------- */
+/* ---------------- player ----------------
+   Invidious sources: fetch stream URLs from the instance API and play in a
+   native <video> element (works even when the instance disables /embed;
+   speed changes are instant; quality switches keep position).
+   Official YouTube source: iframe embed. */
 const SPEEDS = [1, 1.5, 1.75, 2];
-const QUALITIES = [
-  { label: "480p", value: "medium" },
-  { label: "720p", value: "hd720" },
-  { label: "1080p", value: "dash1080" },
-  { label: "Auto (DASH)", value: "dash" }
-];
 let current = null;
+let streams = [];
 
-function playerSrc() {
-  const id = current.id;
-  if (state.instance === YT_OFFICIAL) {
-    return `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0&modestbranding=1&playsinline=1`;
-  }
-  const p = new URLSearchParams({ autoplay: "1", continue: "0", player_style: "invidious" });
-  if (state.proxy) p.set("local", "true");
-  if (state.speed !== 1) p.set("speed", String(state.speed));
-  if (state.quality === "dash1080") { p.set("quality", "dash"); p.set("quality_dash", "1080"); }
-  else p.set("quality", state.quality);
-  return `${state.instance}/embed/${id}?${p}`;
-}
-
-function mountIframe() {
-  $("plVideo").innerHTML =
-    `<iframe src="${esc(playerSrc())}" allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-       allowfullscreen sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"></iframe>`;
-}
+const vid = () => document.getElementById("vid");
+const officialSrc = (id) =>
+  `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0&modestbranding=1&playsinline=1`;
+const officialIframe = (id) =>
+  `<iframe src="${esc(officialSrc(id))}" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen></iframe>`;
 
 function openPlayer(d) {
   current = { id: d.id, title: d.title, channel: d.channel, published: d.published };
   $("plTitle").textContent = d.title;
   $("plSub").textContent = `${d.channel} · ${timeAgo(d.published)}`;
-  renderChips();
-  mountIframe();
+  streams = [];
+  renderSpeedChips();
+  renderQualityChips();
   $("player").classList.add("open");
   document.body.style.overflow = "hidden";
+  if (state.instance === YT_OFFICIAL) {
+    $("plVideo").innerHTML = officialIframe(d.id);
+  } else {
+    startInvidious();
+  }
 }
+
+async function startInvidious() {
+  $("plVideo").innerHTML = `<div class="plmsg"><div class="spinner" style="margin:0 auto"></div></div>`;
+  try {
+    const url = `${state.instance}/api/v1/videos/${current.id}${state.proxy ? "?local=true" : ""}`;
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 12000);
+    const res = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    streams = (data.formatStreams || []).filter(f => f.url)
+      .sort((a, b) => (parseInt(b.resolution) || 0) - (parseInt(a.resolution) || 0));
+    if (!streams.length) throw new Error("No playable streams");
+    renderQualityChips();
+    const pick = streams.find(s => (s.qualityLabel || s.resolution) === state.quality) || streams[0];
+    mountVideo(pick, 0);
+  } catch (e) {
+    playerError();
+  }
+}
+
+function mountVideo(streamObj, startAt) {
+  $("plVideo").innerHTML = `<video id="vid" controls playsinline autoplay preload="metadata"></video>`;
+  const v = vid();
+  v.src = streamObj.url;
+  v.playbackRate = state.speed;
+  v.addEventListener("loadedmetadata", () => {
+    if (startAt) v.currentTime = startAt;
+    v.playbackRate = state.speed;
+  });
+  v.addEventListener("error", () => playerError(), { once: true });
+  v.play().catch(() => {});
+}
+
+function playerError() {
+  if (!current) return;
+  $("plVideo").innerHTML = `<div class="plmsg">
+      <p>This source couldn't play the video.</p>
+      <p style="color:var(--fg2);font-size:13px;margin:0">Switch source in Settings → Player, or:</p>
+      <button class="btn" id="ytFallback">Play via YouTube (may show ads)</button>
+    </div>`;
+  $("ytFallback").addEventListener("click", () => {
+    $("plVideo").innerHTML = officialIframe(current.id);
+  });
+}
+
 function closePlayer() {
   $("player").classList.remove("open");
   $("plVideo").innerHTML = "";
   document.body.style.overflow = "";
   current = null;
+  streams = [];
 }
 
-function renderChips() {
+function renderSpeedChips() {
   $("speedChips").innerHTML = SPEEDS.map(s =>
     `<button class="chip${s === state.speed ? " active" : ""}" data-speed="${s}">${s}×</button>`).join("");
-  const qDisabled = state.instance === YT_OFFICIAL;
-  $("qualityChips").innerHTML = QUALITIES.map(q =>
-    `<button class="chip${q.value === state.quality ? " active" : ""}" data-q="${q.value}"
-      ${qDisabled ? 'style="opacity:.4"' : ""}>${q.label}</button>`).join("");
   $("speedChips").querySelectorAll(".chip").forEach(c => c.addEventListener("click", () => {
     state.speed = parseFloat(c.dataset.speed); store.set("speed", state.speed);
-    renderChips(); if (state.instance === YT_OFFICIAL) toast("Speed applies on Invidious sources only"); else mountIframe();
+    renderSpeedChips();
+    const v = vid();
+    if (v) v.playbackRate = state.speed;
+    else if (state.instance === YT_OFFICIAL) toast("Speed control works on Invidious sources");
   }));
-  $("qualityChips").querySelectorAll(".chip").forEach(c => c.addEventListener("click", () => {
-    if (state.instance === YT_OFFICIAL) { toast("Quality control needs an Invidious source"); return; }
+}
+
+function renderQualityChips() {
+  const el = $("qualityChips");
+  if (state.instance === YT_OFFICIAL && !vid()) {
+    el.innerHTML = `<span class="hint">Use the ⚙️ menu inside the YouTube player.</span>`;
+    return;
+  }
+  if (!streams.length) {
+    el.innerHTML = `<span class="hint">Qualities appear once the video loads.</span>`;
+    return;
+  }
+  el.innerHTML = streams.map(s => {
+    const label = s.qualityLabel || s.resolution || "?";
+    return `<button class="chip${label === state.quality ? " active" : ""}" data-q="${esc(label)}">${esc(label)}</button>`;
+  }).join("");
+  el.querySelectorAll(".chip").forEach(c => c.addEventListener("click", () => {
     state.quality = c.dataset.q; store.set("quality", state.quality);
-    renderChips(); mountIframe();
+    const v = vid();
+    const at = v ? v.currentTime : 0;
+    const s = streams.find(x => (x.qualityLabel || x.resolution) === state.quality) || streams[0];
+    renderQualityChips();
+    mountVideo(s, at);
   }));
 }
 
