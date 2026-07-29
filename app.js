@@ -30,8 +30,26 @@ let state = {
   perChannel: store.get("perChannel", 8),
   speed: store.get("speed", 2),
   quality: store.get("quality", "720p"),
+  hideWatched: store.get("hideWatched", true),
+  watched: store.get("watched", []),               // video ids, oldest first
   feedCache: store.get("feedCache", null)          // {ts, videos}
 };
+
+/* ---------------- watch history ---------------- */
+let watchedSet = new Set(state.watched);
+function markWatched(id) {
+  if (watchedSet.has(id)) return;
+  watchedSet.add(id);
+  state.watched.push(id);
+  if (state.watched.length > 2000) {               // cap so storage never bloats
+    state.watched = state.watched.slice(-2000);
+    watchedSet = new Set(state.watched);
+  }
+  store.set("watched", state.watched);
+}
+function feedFilter(videos) {
+  return state.hideWatched ? videos.filter(v => !watchedSet.has(v.id)) : videos;
+}
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
@@ -120,7 +138,7 @@ async function loadFeed(force) {
   }
   const cache = state.feedCache;
   if (!force && cache && Date.now() - cache.ts < 15 * 60 * 1000 && cache.videos.length) {
-    renderVideos(el, cache.videos);
+    renderVideos(el, feedFilter(cache.videos), "You're all caught up.");
     return;
   }
   el.innerHTML = `<div class="spinner"></div>`;
@@ -162,14 +180,14 @@ async function loadFeed(force) {
 
     state.feedCache = { ts: Date.now(), videos };
     store.set("feedCache", state.feedCache);
-    renderVideos(el, videos);
+    renderVideos(el, feedFilter(videos), "You're all caught up.");
   } catch (e) {
     el.innerHTML = `<div class="empty">${esc(apiErrorMessage(e))}</div>`;
   }
 }
 
-function renderVideos(el, videos) {
-  if (!videos.length) { el.innerHTML = `<div class="empty">Nothing here yet.</div>`; return; }
+function renderVideos(el, videos, emptyMsg) {
+  if (!videos.length) { el.innerHTML = `<div class="empty">${esc(emptyMsg || "Nothing here yet.")}</div>`; return; }
   el.innerHTML = `<div class="vlist">` + videos.map(v => `
     <button class="vcard" data-id="${esc(v.id)}" data-title="${esc(v.title)}"
             data-channel="${esc(v.channel)}" data-published="${esc(v.published)}">
@@ -226,6 +244,7 @@ const officialIframe = (id) =>
 
 function openPlayer(d) {
   current = { id: d.id, title: d.title, channel: d.channel, published: d.published };
+  markWatched(d.id);
   $("plTitle").textContent = d.title;
   $("plSub").textContent = `${d.channel} · ${timeAgo(d.published)}`;
   streams = [];
@@ -334,6 +353,8 @@ function closePlayer() {
   document.body.style.overflow = "";
   current = null;
   streams = [];
+  // re-render the feed so just-watched videos disappear
+  if ($("screen-feed").classList.contains("active")) loadFeed(false);
 }
 
 function renderSpeedChips() {
@@ -522,6 +543,18 @@ function bindSettings() {
     state.feedCache = null; store.set("feedCache", null);
   });
 
+  $("watchedToggle").checked = state.hideWatched;
+  $("watchedToggle").addEventListener("change", e => {
+    state.hideWatched = e.target.checked; store.set("hideWatched", state.hideWatched);
+  });
+  updateWatchedCount();
+  $("clearWatchedBtn").addEventListener("click", () => {
+    state.watched = []; watchedSet = new Set();
+    store.set("watched", state.watched);
+    updateWatchedCount();
+    toast("Watch history cleared");
+  });
+
   $("perChannel").value = String(state.perChannel);
   $("perChannel").addEventListener("change", e => {
     let v = parseInt(e.target.value, 10);
@@ -537,7 +570,8 @@ function bindSettings() {
     const data = {
       channels: state.channels, instance: state.instance, customInstances: state.customInstances,
       proxy: state.proxy, hideShorts: state.hideShorts, perChannel: state.perChannel,
-      speed: state.speed, quality: state.quality
+      speed: state.speed, quality: state.quality,
+      hideWatched: state.hideWatched, watched: state.watched
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
@@ -550,10 +584,11 @@ function bindSettings() {
     try {
       const data = JSON.parse(await f.text());
       if (Array.isArray(data.channels)) state.channels = data.channels.filter(c => c.id && c.title);
-      for (const k of ["instance", "proxy", "hideShorts", "perChannel", "speed", "quality"])
+      for (const k of ["instance", "proxy", "hideShorts", "perChannel", "speed", "quality", "hideWatched"])
         if (data[k] !== undefined) state[k] = data[k];
       if (Array.isArray(data.customInstances)) state.customInstances = data.customInstances;
-      for (const k of ["channels", "instance", "customInstances", "proxy", "hideShorts", "perChannel", "speed", "quality"])
+      if (Array.isArray(data.watched)) { state.watched = data.watched.slice(-2000); watchedSet = new Set(state.watched); }
+      for (const k of ["channels", "instance", "customInstances", "proxy", "hideShorts", "perChannel", "speed", "quality", "hideWatched", "watched"])
         store.set(k, state[k]);
       state.feedCache = null; store.set("feedCache", null);
       renderChannels(); renderInstanceSelect(); bindSettingsValues();
@@ -565,7 +600,13 @@ function bindSettings() {
 function bindSettingsValues() {
   $("proxyToggle").checked = state.proxy;
   $("shortsToggle").checked = state.hideShorts;
+  $("watchedToggle").checked = state.hideWatched;
   $("perChannel").value = String(state.perChannel);
+  updateWatchedCount();
+}
+function updateWatchedCount() {
+  $("watchedCount").textContent = state.watched.length
+    ? `${state.watched.length} video${state.watched.length > 1 ? "s" : ""} marked watched` : "";
 }
 
 /* ---------------- navigation ---------------- */
@@ -577,7 +618,9 @@ function switchTab(name) {
   });
   $("headerTitle").textContent = name === "feed" ? "Subscriptions"
     : name === "search" ? "Search" : "Settings";
+  if (name === "settings") updateWatchedCount();
   $("refreshBtn").style.visibility = name === "feed" ? "visible" : "hidden";
+  $("clearAllBtn").style.display = name === "feed" ? "" : "none";
   window.scrollTo(0, 0);
   if (name === "feed") loadFeed(false);
 }
@@ -586,6 +629,24 @@ function switchTab(name) {
 function init() {
   TABS.forEach(t => $("tab-" + t).addEventListener("click", () => switchTab(t)));
   $("refreshBtn").addEventListener("click", () => loadFeed(true));
+  $("clearAllBtn").addEventListener("click", () => {
+    const vids = (state.feedCache && state.feedCache.videos) || [];
+    let n = 0;
+    for (const v of vids) {
+      if (!watchedSet.has(v.id)) { watchedSet.add(v.id); state.watched.push(v.id); n++; }
+    }
+    if (state.watched.length > 2000) {
+      state.watched = state.watched.slice(-2000);
+      watchedSet = new Set(state.watched);
+    }
+    store.set("watched", state.watched);
+    if (!state.hideWatched) {                 // clearing implies hiding watched
+      state.hideWatched = true; store.set("hideWatched", true);
+      $("watchedToggle").checked = true;
+    }
+    loadFeed(false);
+    toast(n ? `Feed cleared — ${n} video${n > 1 ? "s" : ""} marked watched` : "Feed already clear");
+  });
   $("playerClose").addEventListener("click", closePlayer);
   $("backBtn").addEventListener("click", closePlayer);
   $("descToggle").addEventListener("click", () => {
