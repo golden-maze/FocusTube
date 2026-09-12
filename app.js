@@ -31,20 +31,32 @@ let state = {
   speed: store.get("speed", 2),
   quality: store.get("quality", "720p"),
   hideWatched: store.get("hideWatched", true),
-  watched: store.get("watched", []),               // video ids, oldest first
+  // watched: [{id,title,channel,channelId,published,dur,ts}], oldest first
+  // (older versions stored plain id strings — migrated below)
+  watched: (store.get("watched", []) || []).map(w =>
+    typeof w === "string" ? { id: w, ts: 0 } : w),
   feedCache: store.get("feedCache", null)          // {ts, videos}
 };
 
 /* ---------------- watch history ---------------- */
-let watchedSet = new Set(state.watched);
-function markWatched(id) {
-  if (watchedSet.has(id)) return;
-  watchedSet.add(id);
-  state.watched.push(id);
+let watchedSet = new Set(state.watched.map(w => w.id));
+function markWatched(v) {
+  if (!v || !v.id || watchedSet.has(v.id)) return;
+  watchedSet.add(v.id);
+  state.watched.push({
+    id: v.id, title: v.title || "", channel: v.channel || "",
+    channelId: v.channelId || "", published: v.published || "",
+    dur: +v.dur || 0, ts: Date.now()
+  });
   if (state.watched.length > 2000) {               // cap so storage never bloats
     state.watched = state.watched.slice(-2000);
-    watchedSet = new Set(state.watched);
+    watchedSet = new Set(state.watched.map(w => w.id));
   }
+  store.set("watched", state.watched);
+}
+function unwatch(id) {
+  state.watched = state.watched.filter(w => w.id !== id);
+  watchedSet.delete(id);
   store.set("watched", state.watched);
 }
 function feedFilter(videos) {
@@ -137,8 +149,10 @@ async function loadFeed(force) {
     return;
   }
   const cache = state.feedCache;
-  if (!force && cache && Date.now() - cache.ts < 15 * 60 * 1000 && cache.videos.length) {
-    renderVideos(el, feedFilter(cache.videos), "You're all caught up.");
+  // cache.videos[0].channelId check: refetch caches written by older app versions
+  if (!force && cache && Date.now() - cache.ts < 15 * 60 * 1000 && cache.videos.length
+      && cache.videos[0].channelId) {
+    renderVideos(el, feedFilter(cache.videos), "You're all caught up.", { swipe: true });
     return;
   }
   el.innerHTML = `<div class="spinner"></div>`;
@@ -160,6 +174,7 @@ async function loadFeed(force) {
               id: it.contentDetails.videoId,
               title: sn.title,
               channel: ch.title,
+              channelId: ch.id,
               published: it.contentDetails.videoPublishedAt || sn.publishedAt
             });
           }
@@ -180,28 +195,140 @@ async function loadFeed(force) {
 
     state.feedCache = { ts: Date.now(), videos };
     store.set("feedCache", state.feedCache);
-    renderVideos(el, feedFilter(videos), "You're all caught up.");
+    renderVideos(el, feedFilter(videos), "You're all caught up.", { swipe: true });
   } catch (e) {
     el.innerHTML = `<div class="empty">${esc(apiErrorMessage(e))}</div>`;
   }
 }
 
-function renderVideos(el, videos, emptyMsg) {
+function renderVideos(el, videos, emptyMsg, opts = {}) {
   if (!videos.length) { el.innerHTML = `<div class="empty">${esc(emptyMsg || "Nothing here yet.")}</div>`; return; }
   el.innerHTML = `<div class="vlist">` + videos.map(v => `
-    <button class="vcard" data-id="${esc(v.id)}" data-title="${esc(v.title)}"
-            data-channel="${esc(v.channel)}" data-published="${esc(v.published)}">
+    <div class="vcard${opts.dimWatched && watchedSet.has(v.id) ? " watched" : ""}" role="button" tabindex="0"
+         data-id="${esc(v.id)}" data-title="${esc(v.title)}"
+         data-channel="${esc(v.channel)}" data-channel-id="${esc(v.channelId || "")}"
+         data-published="${esc(v.published)}" data-dur="${+v.dur || 0}">
       <div class="thumbwrap">
         <img loading="lazy" src="https://i.ytimg.com/vi/${esc(v.id)}/mqdefault.jpg" alt="">
         ${v.dur ? `<span class="dur">${fmtDuration(v.dur)}</span>` : ""}
       </div>
       <div class="vmeta">
         <p class="vtitle">${esc(v.title)}</p>
-        <p class="vsub">${esc(v.channel)} · ${timeAgo(v.published)}</p>
+        <p class="vsub"><span class="chanlink">${esc(v.channel)}</span> · ${timeAgo(v.published)}</p>
+        ${opts.unwatch ? `<button class="btn small unwatchBtn">Unwatch</button>` : ""}
       </div>
-    </button>`).join("") + `</div>`;
-  el.querySelectorAll(".vcard").forEach(b =>
-    b.addEventListener("click", () => openPlayer(b.dataset)));
+    </div>`).join("") + `</div>`;
+  el.querySelectorAll(".vcard").forEach(card => {
+    card.addEventListener("click", () => {
+      if (card._swipedAt && Date.now() - card._swipedAt < 500) return; // ignore tap after swipe
+      openPlayer(card.dataset);
+    });
+    const cl = card.querySelector(".chanlink");
+    if (cl) cl.addEventListener("click", e => {
+      const cid = card.dataset.channelId;
+      if (!cid) return;                          // no id known -> let tap open the video
+      if (chView.id === cid && $("channelView").classList.contains("open")) return; // already viewing this channel
+      e.stopPropagation();
+      openChannel(cid, card.dataset.channel);
+    });
+    const uw = card.querySelector(".unwatchBtn");
+    if (uw) uw.addEventListener("click", e => {
+      e.stopPropagation();
+      unwatch(card.dataset.id);
+      renderWatched();
+      toast("Moved back to the feed");
+    });
+    if (opts.swipe) attachSwipe(card, () => {
+      markWatched(card.dataset);
+      loadFeed(false);
+      toast("Marked watched — find it in the Watched tab");
+    });
+  });
+}
+
+/* swipe horizontally on a feed card to mark it watched */
+function attachSwipe(card, onDismiss) {
+  let sx = 0, sy = 0, dx = 0, tracking = false, locked = false;
+  card.addEventListener("touchstart", e => {
+    const t = e.touches[0];
+    sx = t.clientX; sy = t.clientY; dx = 0;
+    tracking = true; locked = false;
+    card.style.transition = "";
+  }, { passive: true });
+  card.addEventListener("touchmove", e => {
+    if (!tracking) return;
+    const t = e.touches[0];
+    dx = t.clientX - sx;
+    const dy = t.clientY - sy;
+    if (!locked) {
+      if (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) { tracking = false; return; } // vertical scroll
+      if (Math.abs(dx) < 12) return;
+      locked = true;
+    }
+    card._swipedAt = Date.now();
+    card.style.transform = `translateX(${dx}px)`;
+    card.style.opacity = String(Math.max(0.25, 1 - Math.abs(dx) / 260));
+  }, { passive: true });
+  card.addEventListener("touchend", () => {
+    if (!tracking && !locked) return;
+    tracking = false;
+    if (locked && Math.abs(dx) > 90) {
+      card.style.transition = "transform .18s ease-out, opacity .18s ease-out";
+      card.style.transform = `translateX(${dx > 0 ? 480 : -480}px)`;
+      card.style.opacity = "0";
+      setTimeout(onDismiss, 180);
+    } else {
+      card.style.transition = "transform .15s ease-out, opacity .15s ease-out";
+      card.style.transform = ""; card.style.opacity = "";
+    }
+    locked = false;
+  });
+}
+
+/* ---------------- watched tab ---------------- */
+function renderWatched() {
+  const el = $("watchedContent");
+  const entries = state.watched.filter(w => w.title).slice().reverse(); // newest first
+  renderVideos(el, entries, "Nothing watched yet.", { unwatch: true });
+}
+
+/* ---------------- channel view ---------------- */
+let chView = { id: null, title: "", videos: [] };
+async function openChannel(cid, title) {
+  chView = { id: cid, title, videos: [] };
+  $("cvTitle").textContent = title;
+  $("cvContent").innerHTML = `<div class="spinner"></div>`;
+  $("channelView").classList.add("open");
+  document.body.style.overflow = "hidden";
+  try {
+    const data = await yt("playlistItems", {
+      part: "snippet,contentDetails", playlistId: "UU" + cid.slice(2), maxResults: 30
+    });
+    const base = (data.items || [])
+      .filter(it => it.snippet && it.snippet.title !== "Private video" && it.snippet.title !== "Deleted video")
+      .map(it => ({
+        id: it.contentDetails.videoId, title: it.snippet.title,
+        channel: title, channelId: cid,
+        published: it.contentDetails.videoPublishedAt || it.snippet.publishedAt
+      }));
+    const details = await fetchDetails(base.map(v => v.id));
+    let videos = base.map(v => ({ ...v, ...(details.get(v.id) || { dur: 0, live: false }) }))
+      .filter(v => !v.live);
+    if (state.hideShorts) videos = videos.filter(v => !isShort(v));
+    if (chView.id !== cid) return;               // view changed meanwhile
+    chView.videos = videos;
+    renderVideos($("cvContent"), videos, "No videos found.", { dimWatched: true });
+  } catch (e) {
+    if (chView.id === cid) $("cvContent").innerHTML = `<div class="empty">${esc(apiErrorMessage(e))}</div>`;
+  }
+}
+function closeChannel() {
+  $("channelView").classList.remove("open");
+  $("cvContent").innerHTML = "";
+  chView = { id: null, title: "", videos: [] };
+  document.body.style.overflow = "";
+  if ($("screen-feed").classList.contains("active")) loadFeed(false);
+  if ($("screen-watched").classList.contains("active")) renderWatched();
 }
 
 /* ---------------- search ---------------- */
@@ -210,18 +337,55 @@ async function runSearch(q) {
   el.innerHTML = `<div class="spinner"></div>`;
   try {
     const data = await yt("search", {
-      part: "snippet", type: "video", q, maxResults: 25, safeSearch: "none"
+      part: "snippet", type: "video,channel", q, maxResults: 25, safeSearch: "none"
     });
-    const base = (data.items || []).map(it => ({
+    const items = data.items || [];
+    const chans = items.filter(it => it.id.kind === "youtube#channel").slice(0, 5).map(it => ({
+      id: it.id.channelId, title: it.snippet.title,
+      thumb: (it.snippet.thumbnails?.default?.url || "").replace(/^http:/, "https:")
+    }));
+    const base = items.filter(it => it.id.kind === "youtube#video").map(it => ({
       id: it.id.videoId,
       title: it.snippet.title,
       channel: it.snippet.channelTitle,
+      channelId: it.snippet.channelId,
       published: it.snippet.publishedAt
     }));
     const details = await fetchDetails(base.map(v => v.id));
     let videos = base.map(v => ({ ...v, ...(details.get(v.id) || { dur: 0, live: false }) }));
     if (state.hideShorts) videos = videos.filter(v => !isShort(v));
-    renderVideos(el, videos);
+
+    el.innerHTML = "";
+    if (chans.length) {
+      const box = document.createElement("div");
+      box.className = "schans";
+      box.innerHTML = `<p class="pl-label" style="padding:0 14px;margin:6px 0 2px">Channels</p>` +
+        chans.map(c => `
+        <div class="chanrow schanrow" data-cid="${esc(c.id)}" data-cname="${esc(c.title)}">
+          <img src="${esc(c.thumb)}" alt="" onerror="this.style.visibility='hidden'">
+          <span class="name">${esc(c.title)}</span>
+          <button class="btn small" data-videos>Videos</button>
+          ${state.channels.some(x => x.id === c.id)
+            ? `<button class="btn small" disabled>Added ✓</button>`
+            : `<button class="btn small primary" data-sub data-thumb="${esc(c.thumb)}">Add</button>`}
+        </div>`).join("") +
+        `<p class="pl-label" style="padding:0 14px;margin:14px 0 2px">Videos</p>`;
+      el.appendChild(box);
+      box.querySelectorAll(".schanrow").forEach(row => {
+        row.querySelector("[data-videos]").addEventListener("click", () =>
+          openChannel(row.dataset.cid, row.dataset.cname));
+        const sub = row.querySelector("[data-sub]");
+        if (sub) sub.addEventListener("click", () => {
+          addChannel({ id: row.dataset.cid, title: row.dataset.cname, thumb: sub.dataset.thumb });
+          const done = document.createElement("button");
+          done.className = "btn small"; done.textContent = "Added ✓"; done.disabled = true;
+          sub.replaceWith(done);
+        });
+      });
+    }
+    const vbox = document.createElement("div");
+    el.appendChild(vbox);
+    renderVideos(vbox, videos, "No videos found.");
   } catch (e) {
     el.innerHTML = `<div class="empty">${esc(apiErrorMessage(e))}</div>`;
   }
@@ -244,7 +408,7 @@ const officialIframe = (id) =>
 
 function openPlayer(d) {
   current = { id: d.id, title: d.title, channel: d.channel, published: d.published };
-  markWatched(d.id);
+  markWatched(d);
   $("plTitle").textContent = d.title;
   $("plSub").textContent = `${d.channel} · ${timeAgo(d.published)}`;
   streams = [];
@@ -350,11 +514,18 @@ function playerError() {
 function closePlayer() {
   $("player").classList.remove("open");
   $("plVideo").innerHTML = "";
-  document.body.style.overflow = "";
+  const channelOpen = $("channelView").classList.contains("open");
+  document.body.style.overflow = channelOpen ? "hidden" : "";
   current = null;
   streams = [];
-  // re-render the feed so just-watched videos disappear
-  if ($("screen-feed").classList.contains("active")) loadFeed(false);
+  // refresh whatever list sits underneath so just-watched videos update
+  if (channelOpen && chView.id) {
+    renderVideos($("cvContent"), chView.videos, "No videos found.", { dimWatched: true });
+  } else if ($("screen-feed").classList.contains("active")) {
+    loadFeed(false);
+  } else if ($("screen-watched").classList.contains("active")) {
+    renderWatched();
+  }
 }
 
 function renderSpeedChips() {
@@ -587,7 +758,10 @@ function bindSettings() {
       for (const k of ["instance", "proxy", "hideShorts", "perChannel", "speed", "quality", "hideWatched"])
         if (data[k] !== undefined) state[k] = data[k];
       if (Array.isArray(data.customInstances)) state.customInstances = data.customInstances;
-      if (Array.isArray(data.watched)) { state.watched = data.watched.slice(-2000); watchedSet = new Set(state.watched); }
+      if (Array.isArray(data.watched)) {
+        state.watched = data.watched.slice(-2000).map(w => typeof w === "string" ? { id: w, ts: 0 } : w);
+        watchedSet = new Set(state.watched.map(w => w.id));
+      }
       for (const k of ["channels", "instance", "customInstances", "proxy", "hideShorts", "perChannel", "speed", "quality", "hideWatched", "watched"])
         store.set(k, state[k]);
       state.feedCache = null; store.set("feedCache", null);
@@ -610,15 +784,16 @@ function updateWatchedCount() {
 }
 
 /* ---------------- navigation ---------------- */
-const TABS = ["feed", "search", "settings"];
+const TABS = ["feed", "search", "watched", "settings"];
+const TAB_TITLES = { feed: "Subscriptions", search: "Search", watched: "Watched", settings: "Settings" };
 function switchTab(name) {
   TABS.forEach(t => {
     $("screen-" + t).classList.toggle("active", t === name);
     $("tab-" + t).classList.toggle("active", t === name);
   });
-  $("headerTitle").textContent = name === "feed" ? "Subscriptions"
-    : name === "search" ? "Search" : "Settings";
+  $("headerTitle").textContent = TAB_TITLES[name];
   if (name === "settings") updateWatchedCount();
+  if (name === "watched") renderWatched();
   $("refreshBtn").style.visibility = name === "feed" ? "visible" : "hidden";
   $("clearAllBtn").style.display = name === "feed" ? "" : "none";
   window.scrollTo(0, 0);
@@ -633,13 +808,8 @@ function init() {
     const vids = (state.feedCache && state.feedCache.videos) || [];
     let n = 0;
     for (const v of vids) {
-      if (!watchedSet.has(v.id)) { watchedSet.add(v.id); state.watched.push(v.id); n++; }
+      if (!watchedSet.has(v.id)) { markWatched(v); n++; }
     }
-    if (state.watched.length > 2000) {
-      state.watched = state.watched.slice(-2000);
-      watchedSet = new Set(state.watched);
-    }
-    store.set("watched", state.watched);
     if (!state.hideWatched) {                 // clearing implies hiding watched
       state.hideWatched = true; store.set("hideWatched", true);
       $("watchedToggle").checked = true;
@@ -649,6 +819,7 @@ function init() {
   });
   $("playerClose").addEventListener("click", closePlayer);
   $("backBtn").addEventListener("click", closePlayer);
+  $("cvBack").addEventListener("click", closeChannel);
   $("descToggle").addEventListener("click", () => {
     const box = $("plDesc");
     const open = box.style.display !== "none";
